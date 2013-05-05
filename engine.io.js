@@ -1,4 +1,5 @@
 ;(function(){
+
 /**
  * Require the given path.
  *
@@ -7,27 +8,32 @@
  * @api public
  */
 
-function require(p, parent, orig){
-  var path = require.resolve(p)
-    , mod = require.modules[path];
+function require(path, parent, orig) {
+  var resolved = require.resolve(path);
 
   // lookup failed
-  if (null == path) {
-    orig = orig || p;
+  if (null == resolved) {
+    orig = orig || path;
     parent = parent || 'root';
-    throw new Error('failed to require "' + orig + '" from "' + parent + '"');
+    var err = new Error('Failed to require "' + orig + '" from "' + parent + '"');
+    err.path = orig;
+    err.parent = parent;
+    err.require = true;
+    throw err;
   }
+
+  var module = require.modules[resolved];
 
   // perform real require()
   // by invoking the module's
   // registered function
-  if (!mod.exports) {
-    mod.exports = {};
-    mod.client = mod.component = true;
-    mod.call(this, mod, mod.exports, require.relative(path));
+  if (!module.exports) {
+    module.exports = {};
+    module.client = module.component = true;
+    module.call(this, module.exports, require.relative(resolved), module);
   }
 
-  return mod.exports;
+  return module.exports;
 }
 
 /**
@@ -56,19 +62,26 @@ require.aliases = {};
  * @api private
  */
 
-require.resolve = function(path){
-  var orig = path
-    , reg = path + '.js'
-    , regJSON = path + '.json'
-    , index = path + '/index.js'
-    , indexJSON = path + '/index.json';
+require.resolve = function(path) {
+  if (path.charAt(0) === '/') path = path.slice(1);
+  var index = path + '/index.js';
 
-  return require.modules[reg] && reg
-    || require.modules[regJSON] && regJSON
-    || require.modules[index] && index
-    || require.modules[indexJSON] && indexJSON
-    || require.modules[orig] && orig
-    || require.aliases[index];
+  var paths = [
+    path,
+    path + '.js',
+    path + '.json',
+    path + '/index.js',
+    path + '/index.json'
+  ];
+
+  for (var i = 0; i < paths.length; i++) {
+    var path = paths[i];
+    if (require.modules.hasOwnProperty(path)) return path;
+  }
+
+  if (require.aliases.hasOwnProperty(index)) {
+    return require.aliases[index];
+  }
 };
 
 /**
@@ -100,15 +113,15 @@ require.normalize = function(curr, path) {
 };
 
 /**
- * Register module at `path` with callback `fn`.
+ * Register module at `path` with callback `definition`.
  *
  * @param {String} path
- * @param {Function} fn
+ * @param {Function} definition
  * @api private
  */
 
-require.register = function(path, fn){
-  require.modules[path] = fn;
+require.register = function(path, definition) {
+  require.modules[path] = definition;
 };
 
 /**
@@ -119,9 +132,10 @@ require.register = function(path, fn){
  * @api private
  */
 
-require.alias = function(from, to){
-  var fn = require.modules[from];
-  if (!fn) throw new Error('failed to alias "' + from + '", it does not exist');
+require.alias = function(from, to) {
+  if (!require.modules.hasOwnProperty(from)) {
+    throw new Error('Failed to alias "' + from + '", it does not exist');
+  }
   require.aliases[to] = from;
 };
 
@@ -140,7 +154,7 @@ require.relative = function(parent) {
    * lastIndexOf helper.
    */
 
-  function lastIndexOf(arr, obj){
+  function lastIndexOf(arr, obj) {
     var i = arr.length;
     while (i--) {
       if (arr[i] === obj) return i;
@@ -152,40 +166,41 @@ require.relative = function(parent) {
    * The relative require() itself.
    */
 
-  function fn(path){
-    var orig = path;
-    path = fn.resolve(path);
-    return require(path, parent, orig);
+  function localRequire(path) {
+    var resolved = localRequire.resolve(path);
+    return require(resolved, parent, path);
   }
 
   /**
    * Resolve relative to the parent.
    */
 
-  fn.resolve = function(path){
+  localRequire.resolve = function(path) {
+    var c = path.charAt(0);
+    if ('/' == c) return path.slice(1);
+    if ('.' == c) return require.normalize(p, path);
+
     // resolve deps by returning
     // the dep in the nearest "deps"
     // directory
-    if ('.' != path.charAt(0)) {
-      var segs = parent.split('/');
-      var i = lastIndexOf(segs, 'deps') + 1;
-      if (!i) i = 0;
-      path = segs.slice(0, i + 1).join('/') + '/deps/' + path;
-      return path;
-    }
-    return require.normalize(p, path);
+    var segs = parent.split('/');
+    var i = lastIndexOf(segs, 'deps') + 1;
+    if (!i) i = 0;
+    path = segs.slice(0, i + 1).join('/') + '/deps/' + path;
+    return path;
   };
 
   /**
    * Check if module is defined at `path`.
    */
 
-  fn.exists = function(path){
-    return !! require.modules[fn.resolve(path)];
+  localRequire.exists = function(path) {
+    return require.modules.hasOwnProperty(localRequire.resolve(path));
   };
 
-  return fn;
-};require.register("component-emitter/index.js", function(module, exports, require){
+  return localRequire;
+};
+require.register("component-emitter/index.js", function(exports, require, module){
 
 /**
  * Expose `Emitter`.
@@ -195,7 +210,7 @@ module.exports = Emitter;
 
 /**
  * Initialize a new `Emitter`.
- * 
+ *
  * @api public
  */
 
@@ -268,8 +283,18 @@ Emitter.prototype.once = function(event, fn){
  * @api public
  */
 
-Emitter.prototype.off = function(event, fn){
+Emitter.prototype.off =
+Emitter.prototype.removeListener =
+Emitter.prototype.removeAllListeners = function(event, fn){
   this._callbacks = this._callbacks || {};
+
+  // all
+  if (0 == arguments.length) {
+    this._callbacks = {};
+    return this;
+  }
+
+  // specific event
   var callbacks = this._callbacks[event];
   if (!callbacks) return this;
 
@@ -290,7 +315,7 @@ Emitter.prototype.off = function(event, fn){
  *
  * @param {String} event
  * @param {Mixed} ...
- * @return {Emitter} 
+ * @return {Emitter}
  */
 
 Emitter.prototype.emit = function(event){
@@ -333,14 +358,18 @@ Emitter.prototype.hasListeners = function(event){
   return !! this.listeners(event).length;
 };
 
-
 });
-require.register("LearnBoost-engine.io-protocol/lib/index.js", function(module, exports, require){
+require.register("LearnBoost-engine.io-protocol/lib/index.js", function(exports, require, module){
 /**
  * Module dependencies.
  */
 
-var keys = require('./keys')
+var keys = require('./keys');
+
+/**
+ * Current protocol version.
+ */
+exports.protocol = 2;
 
 /**
  * Packet types.
@@ -362,7 +391,7 @@ var packetslist = keys(packets);
  * Premade error packet.
  */
 
-var err = { type: 'error', data: 'parser error' }
+var err = { type: 'error', data: 'parser error' };
 
 /**
  * Encodes a packet.
@@ -379,7 +408,7 @@ var err = { type: 'error', data: 'parser error' }
  */
 
 exports.encodePacket = function (packet) {
-  var encoded = packets[packet.type]
+  var encoded = packets[packet.type];
 
   // data fragment is optional
   if (undefined !== packet.data) {
@@ -412,7 +441,7 @@ exports.decodePacket = function (data) {
 
 /**
  * Encodes multiple messages (payload).
- * 
+ *
  *     <length>:data
  *
  * Example:
@@ -428,8 +457,8 @@ exports.encodePayload = function (packets) {
     return '0:';
   }
 
-  var encoded = ''
-    , message
+  var encoded = '';
+  var message;
 
   for (var i = 0, l = packets.length; i < l; i++) {
     message = exports.encodePacket(packets[i]);
@@ -442,37 +471,36 @@ exports.encodePayload = function (packets) {
 /*
  * Decodes data when a payload is maybe expected.
  *
- * @param {String} data
- * @return {Array} packets
+ * @param {String} data, callback method
  * @api public
  */
 
-exports.decodePayload = function (data) {
+exports.decodePayload = function (data, callback) {
+  var packet;
   if (data == '') {
     // parser error - ignoring payload
-    return [err];
+    return callback(err, 0, 1);
   }
 
-  var packets = []
-    , length = ''
-    , n, msg, packet
+  var length = ''
+    , n, msg;
 
   for (var i = 0, l = data.length; i < l; i++) {
-    var chr = data.charAt(i)
+    var chr = data.charAt(i);
 
     if (':' != chr) {
       length += chr;
     } else {
       if ('' == length || (length != (n = Number(length)))) {
         // parser error - ignoring payload
-        return [err];
+        return callback(err, 0, 1);
       }
 
       msg = data.substr(i + 1, n);
 
       if (length != msg.length) {
         // parser error - ignoring payload
-        return [err];
+        return callback(err, 0, 1);
       }
 
       if (msg.length) {
@@ -480,28 +508,28 @@ exports.decodePayload = function (data) {
 
         if (err.type == packet.type && err.data == packet.data) {
           // parser error in individual packet - ignoring payload
-          return [err];
+          return callback(err, 0, 1);
         }
 
-        packets.push(packet);
+        var ret = callback(packet, i + n, l);
+        if (false === ret) return;
       }
 
       // advance cursor
       i += n;
-      length = ''
+      length = '';
     }
   }
 
   if (length != '') {
     // parser error - ignoring payload
-    return [err];
+    return callback(err, 0, 1);
   }
 
-  return packets;
 };
 
 });
-require.register("LearnBoost-engine.io-protocol/lib/keys.js", function(module, exports, require){
+require.register("LearnBoost-engine.io-protocol/lib/keys.js", function(exports, require, module){
 
 /**
  * Gets the keys for an object.
@@ -523,7 +551,7 @@ module.exports = Object.keys || function keys (obj){
 };
 
 });
-require.register("visionmedia-debug/index.js", function(module, exports, require){
+require.register("visionmedia-debug/index.js", function(exports, require, module){
 if ('undefined' == typeof window) {
   module.exports = require('./lib/debug');
 } else {
@@ -531,7 +559,7 @@ if ('undefined' == typeof window) {
 }
 
 });
-require.register("visionmedia-debug/debug.js", function(module, exports, require){
+require.register("visionmedia-debug/debug.js", function(exports, require, module){
 
 /**
  * Expose `debug()` as the module.
@@ -551,6 +579,8 @@ function debug(name) {
   if (!debug.enabled(name)) return function(){};
 
   return function(fmt){
+    fmt = coerce(fmt);
+
     var curr = new Date;
     var ms = curr - (debug[name] || curr);
     debug[name] = curr;
@@ -584,7 +614,9 @@ debug.skips = [];
  */
 
 debug.enable = function(name) {
-  localStorage.debug = name;
+  try {
+    localStorage.debug = name;
+  } catch(e){}
 
   var split = (name || '').split(/[\s,]+/)
     , len = split.length;
@@ -651,13 +683,24 @@ debug.enabled = function(name) {
   return false;
 };
 
+/**
+ * Coerce `val`.
+ */
+
+function coerce(val) {
+  if (val instanceof Error) return val.stack || val.message;
+  return val;
+}
+
 // persist
 
 if (window.localStorage) debug.enable(localStorage.debug);
-});
-require.register("engine.io/lib/index.js", function(module, exports, require){
 
-module.exports = require('./socket');
+});
+require.register("engine.io/lib/index.js", function(exports, require, module){
+
+// module.exports = require('./socket');
+module.exports = require('./reliable-socket');
 
 /**
  * Exports parser
@@ -668,7 +711,7 @@ module.exports = require('./socket');
 module.exports.parser = require('engine.io-parser');
 
 });
-require.register("engine.io/lib/socket.js", function(module, exports, require){
+require.register("engine.io/lib/socket.js", function(exports, require, module){
 /**
  * Module dependencies.
  */
@@ -676,7 +719,8 @@ require.register("engine.io/lib/socket.js", function(module, exports, require){
 var util = require('./util')
   , transports = require('./transports')
   , Emitter = require('./emitter')
-  , debug = require('debug')('engine-client:socket');
+  , debug = require('debug')('engine-client:socket')
+  , parser = require('engine.io-parser');
 
 /**
  * Module exports.
@@ -689,6 +733,14 @@ module.exports = Socket;
  */
 
 var global = util.global();
+
+/**
+ * Noop function.
+ *
+ * @api private
+ */
+
+function noop () {};
 
 /**
  * Socket constructor.
@@ -713,6 +765,7 @@ function Socket(uri, opts){
     opts.host = uri.host;
     opts.secure = uri.protocol == 'https' || uri.protocol == 'wss';
     opts.port = uri.port;
+    if (uri.query) opts.query = uri.query;
   }
 
   this.secure = null != opts.secure ? opts.secure :
@@ -730,6 +783,7 @@ function Socket(uri, opts){
        location.port :
        (this.secure ? 443 : 80));
   this.query = opts.query || {};
+  if ('string' == typeof this.query) this.query = util.qsParse(this.query);
   this.upgrade = false !== opts.upgrade;
   this.path = (opts.path || '/engine.io').replace(/\/$/, '') + '/';
   this.forceJSONP = !!opts.forceJSONP;
@@ -739,6 +793,7 @@ function Socket(uri, opts){
   this.transports = opts.transports || ['polling', 'websocket', 'flashsocket'];
   this.readyState = '';
   this.writeBuffer = [];
+  this.callbackBuffer = [];
   this.policyPort = opts.policyPort || 843;
   this.open();
 
@@ -758,7 +813,7 @@ Emitter(Socket.prototype);
  * @api public
  */
 
-Socket.protocol = 1;
+Socket.protocol = parser.protocol; // this is an int
 
 /**
  * Static EventEmitter.
@@ -790,11 +845,15 @@ Socket.parser = require('engine.io-parser');
 Socket.prototype.createTransport = function (name) {
   debug('creating transport "%s"', name);
   var query = clone(this.query);
+
+  // append engine.io protocol identifier
+  query.EIO = parser.protocol;
+
+  // transport name
   query.transport = name;
 
-  if (this.id) {
-    query.sid = this.id;
-  }
+  // session id if we already have one
+  if (this.id) query.sid = this.id;
 
   var transport = new transports[name]({
     hostname: this.hostname,
@@ -855,7 +914,7 @@ Socket.prototype.setTransport = function (transport) {
   // set up transport listeners
   transport
     .on('drain', function () {
-      self.flush();
+      self.onDrain();
     })
     .on('packet', function (packet) {
       self.onPacket(packet);
@@ -1078,6 +1137,41 @@ Socket.prototype.ping = function () {
 };
 
 /**
+ * Called on `drain` event
+ * 
+ * @api private
+ */
+
+ Socket.prototype.onDrain = function() {
+  this.callbacks();
+  this.writeBuffer.splice(0, this.prevBufferLen);
+  this.callbackBuffer.splice(0, this.prevBufferLen);
+  // setting prevBufferLen = 0 is very important
+  // for example, when upgrading, upgrade packet is sent over,
+  // and a nonzero prevBufferLen could cause problems on `drain`
+  this.prevBufferLen = 0;
+  if (this.writeBuffer.length == 0) {
+    this.emit('drain');
+  } else {
+    this.flush();
+  }
+ }
+
+/**
+ * Calls all the callback functions associated with sending packets
+ * 
+ * @api private
+ */
+
+Socket.prototype.callbacks = function() {
+  for (var i = 0; i < this.prevBufferLen; i++) {
+    if (this.callbackBuffer[i]) {
+      this.callbackBuffer[i]();
+    }
+  }
+}
+
+/**
  * Flush write buffers.
  *
  * @api private
@@ -1088,7 +1182,10 @@ Socket.prototype.flush = function () {
     !this.upgrading && this.writeBuffer.length) {
     debug('flushing %d packets in socket', this.writeBuffer.length);
     this.transport.send(this.writeBuffer);
-    this.writeBuffer = [];
+    // keep track of current length of writeBuffer
+    // splice writeBuffer and callbackBuffer on `drain`
+    this.prevBufferLen = this.writeBuffer.length;
+    this.emit('flush');
   }
 };
 
@@ -1096,13 +1193,14 @@ Socket.prototype.flush = function () {
  * Sends a message.
  *
  * @param {String} message.
+ * @param {Function} callback function.
  * @return {Socket} for chaining.
  * @api public
  */
 
 Socket.prototype.write =
-Socket.prototype.send = function (msg) {
-  this.sendPacket('message', msg);
+Socket.prototype.send = function (msg, fn) {
+  this.sendPacket('message', msg, fn);
   return this;
 };
 
@@ -1111,13 +1209,15 @@ Socket.prototype.send = function (msg) {
  *
  * @param {String} packet type.
  * @param {String} data.
+ * @param {Function} callback function.
  * @api private
  */
 
-Socket.prototype.sendPacket = function (type, data) {
+Socket.prototype.sendPacket = function (type, data, fn) {
   var packet = { type: type, data: data };
   this.emit('packetCreate', packet);
   this.writeBuffer.push(packet);
+  this.callbackBuffer.push(fn);
   this.flush();
 };
 
@@ -1159,8 +1259,15 @@ Socket.prototype.onError = function (err) {
 Socket.prototype.onClose = function (reason, desc) {
   if ('opening' == this.readyState || 'open' == this.readyState) {
     debug('socket close with reason: "%s"', reason);
+    var self = this;
     clearTimeout(this.pingIntervalTimer);
     clearTimeout(this.pingTimeoutTimer);
+    // clean buffers in next tick, so developers can still
+    // grab the buffers on `close` event
+    setTimeout(function() {
+      self.writeBuffer = [];
+      self.callbackBuffer = [];
+    }, 0);
     this.readyState = 'closed';
     this.emit('close', reason, desc);
     this.onclose && this.onclose.call(this);
@@ -1170,7 +1277,7 @@ Socket.prototype.onClose = function (reason, desc) {
 
 /**
  * Filters upgrades, returning only those matching client transports.
- * 
+ *
  * @param {Array} server upgrades
  * @api private
  *
@@ -1185,7 +1292,134 @@ Socket.prototype.filterUpgrades = function (upgrades) {
 };
 
 });
-require.register("engine.io/lib/transport.js", function(module, exports, require){
+require.register("engine.io/lib/reliable-socket.js", function(exports, require, module){
+/**
+ * Module requirements.
+ */
+
+var Socket = require('./socket')
+  , Emitter = require('./emitter');
+
+/**
+ * Exports the constructor.
+ */
+
+module.exports = ReliableSocket;
+
+/**
+ * Reliable socket constructor.
+ *
+ * @api public.
+ */
+
+function ReliableSocket(uri, opts) {
+  if (!(this instanceof ReliableSocket)) return new ReliableSocket(uri, opts);
+
+  opts = opts || {};
+
+  if ('object' == typeof uri) {
+    opts = uri;
+  }
+
+  this.socket = new Socket(uri, opts);
+  this.sessionId = 'asdf';
+  this.reconnectTimeout = opts.timeout || 5000;
+
+  this.setupSocketListeners();
+}
+
+/*
+ * Mix in `Emitter`.
+ */
+
+Emitter(ReliableSocket.prototype);
+
+/**
+ * Protocol version.
+ *
+ * @api public
+ */
+
+ReliableSocket.protocol = Socket.protocol;
+
+/**
+ * Expose deps for legacy compatibility
+ * and standalone browser access.
+ */
+
+ReliableSocket.Socket = ReliableSocket;
+ReliableSocket.Emitter = Emitter;
+ReliableSocket.Transport = require('./transport');
+ReliableSocket.transports = require('./transports');
+ReliableSocket.util = require('./util');
+// ReliableSocket.parser = require('../../engine.io-protocol');
+
+/**
+ * Sets up listeners for underlying Socket events
+ *
+ * @api private
+ */
+
+ReliableSocket.prototype.setupSocketListeners = function() {
+  var self = this;
+
+  // this.socket.transport
+  //   .on('error', function(err) {
+  //     console.log('triggering ours also');
+  //     self.socket.emit('error', err);
+  //   });
+
+  this.socket.onError = function(err) {
+    console.log('our own version of onError');
+    self.socket.emit('error', err);
+  }
+
+  this.socket
+    .on('open', function () {
+      self.emit('open');
+    })
+    .on('close', function (reason, desc) {
+      console.log('closed');
+      self.emit('close', reason, desc);
+    })
+    .on('error', function (err) {
+      // based on the type of error, we should try to reconnect
+      // does the following work?
+      console.log('intercepted error ' + err);
+      setTimeout(function() {
+        console.log('trying to re-open');
+        // self.socket.open();
+        self.socket.onOpen();
+        self.write('hello, after trying to reopen');
+      }, 2500);
+    })
+    .on('data', function (data) {
+      self.emit('data', data);
+    })
+    .on('message', function (msg) {
+      self.emit('message', msg)
+    });
+}
+
+/**
+ *
+ * @param {String} message
+ * @param {Function} callback function.
+ * @return {Socket} for chaining.
+ * @api public
+ */
+
+ReliableSocket.prototype.write =
+ReliableSocket.prototype.send = function (msg, fn) {
+  this.socket.sendPacket('message', msg, fn);
+  return this;
+}
+
+ReliableSocket.prototype.filterUpgrades = function (upgrades) {
+  return this.socket.filterUpgrades(upgrades);
+};
+});
+require.register("engine.io/lib/transport.js", function(exports, require, module){
 
 /**
  * Module dependencies.
@@ -1329,19 +1563,13 @@ Transport.prototype.onClose = function () {
 };
 
 });
-require.register("engine.io/lib/emitter.js", function(module, exports, require){
+require.register("engine.io/lib/emitter.js", function(exports, require, module){
 
 /**
  * Module dependencies.
  */
 
-var Emitter;
-
-try {
-  Emitter = require('emitter');
-} catch(e){
-  Emitter = require('emitter-component');
-}
+var Emitter = require('emitter');
 
 /**
  * Module exports.
@@ -1373,18 +1601,8 @@ Emitter.prototype.removeEventListener = Emitter.prototype.off;
 
 Emitter.prototype.removeListener = Emitter.prototype.off;
 
-/**
- * Node-compatible `EventEmitter#removeAllListeners`
- *
- * @api public
- */
-
-Emitter.prototype.removeAllListeners = function(){
-  this._callbacks = {};
-};
-
 });
-require.register("engine.io/lib/util.js", function(module, exports, require){
+require.register("engine.io/lib/util.js", function(exports, require, module){
 /**
  * Status of page load.
  */
@@ -1495,12 +1713,12 @@ exports.defer = function (fn) {
  * @api private
  */
 
-var rvalidchars = /^[\],:{}\s]*$/
-  , rvalidescape = /\\(?:["\\\/bfnrt]|u[0-9a-fA-F]{4})/g
-  , rvalidtokens = /"[^"\\\n\r]*"|true|false|null|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?/g
-  , rvalidbraces = /(?:^|:|,)(?:\s*\[)+/g
-  , rtrimLeft = /^\s+/
-  , rtrimRight = /\s+$/
+var rvalidchars = /^[\],:{}\s]*$/;
+var rvalidescape = /\\(?:["\\\/bfnrt]|u[0-9a-fA-F]{4})/g;
+var rvalidtokens = /"[^"\\\n\r]*"|true|false|null|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?/g;
+var rvalidbraces = /(?:^|:|,)(?:\s*\[)+/g;
+var rtrimLeft = /^\s+/;
+var rtrimRight = /\s+$/;
 
 exports.parseJSON = function (data) {
   var global = exports.global();
@@ -1538,8 +1756,9 @@ exports.ua = {};
  */
 
 exports.ua.hasCORS = 'undefined' != typeof XMLHttpRequest && (function () {
+  var a;
   try {
-    var a = new XMLHttpRequest();
+    a = new XMLHttpRequest();
   } catch (e) {
     return false;
   }
@@ -1588,10 +1807,10 @@ exports.ua.ios6 = exports.ua.ios && /OS 6_/.test(navigator.userAgent);
  */
 
 exports.request = function request (xdomain) {
-  if ('undefined' == typeof window) {
+  try {
     var _XMLHttpRequest = require('xmlhttprequest').XMLHttpRequest;
     return new _XMLHttpRequest();
-  }
+  } catch (e) {}
 
   if (xdomain && 'undefined' != typeof XDomainRequest && !exports.ua.hasCORS) {
     return new XDomainRequest();
@@ -1650,15 +1869,32 @@ exports.qs = function (obj) {
   for (var i in obj) {
     if (obj.hasOwnProperty(i)) {
       if (str.length) str += '&';
-      str += i + '=' + encodeURIComponent(obj[i]);
+      str += encodeURIComponent(i) + '=' + encodeURIComponent(obj[i]);
     }
   }
 
   return str;
 };
 
+/**
+ * Parses a simple querystring.
+ *
+ * @param {String} qs
+ * @api private
+ */
+
+exports.qsParse = function(qs){
+  var qry = {};
+  var pairs = qs.split('&');
+  for (var i = 0, l = pairs.length; i < l; i++) {
+    var pair = pairs[i].split('=');
+    qry[decodeURIComponent(pair[0])] = decodeURIComponent(pair[1]);
+  }
+  return qry;
+};
+
 });
-require.register("engine.io/lib/transports/index.js", function(module, exports, require){
+require.register("engine.io/lib/transports/index.js", function(exports, require, module){
 
 /**
  * Module dependencies
@@ -1701,11 +1937,11 @@ function polling (opts) {
     var port = location.port;
 
     // some user agents have empty `location.port`
-    if (Number(port) != port) {
+    if (Number(port) !== port) {
       port = isSSL ? 443 : 80;
     }
 
-    xd = opts.host != location.hostname || port != opts.port;
+    xd = opts.hostname != location.hostname || port != opts.port;
     isXProtocol = opts.secure != isSSL;
   }
 
@@ -1723,7 +1959,7 @@ function polling (opts) {
 };
 
 });
-require.register("engine.io/lib/transports/polling.js", function(module, exports, require){
+require.register("engine.io/lib/transports/polling.js", function(exports, require, module){
 /**
  * Module dependencies.
  */
@@ -1843,34 +2079,37 @@ Polling.prototype.poll = function(){
  */
 
 Polling.prototype.onData = function(data){
+  var self = this;
   debug('polling got data %s', data);
-  // decode payload
-  var packets = parser.decodePayload(data);
 
-  for (var i = 0, l = packets.length; i < l; i++) {
-    // if its the first message we consider the trnasport open
-    if ('opening' == this.readyState) {
-      this.onOpen();
+  // decode payload
+  parser.decodePayload(data, function(packet, index, total) {
+    // if its the first message we consider the transport open
+    if ('opening' == self.readyState) {
+      self.onOpen();
     }
 
     // if its a close packet, we close the ongoing requests
-    if ('close' == packets[i].type) {
-      this.onClose();
-      return;
+    if ('close' == packet.type) {
+      self.onClose();
+      return false;
     }
 
     // otherwise bypass onData and handle the message
-    this.onPacket(packets[i]);
-  }
+    self.onPacket(packet);
+  });
 
-  // if we got data we're not polling
-  this.polling = false;
-  this.emit('pollComplete');
+  // if an event did not trigger closing
+  if ('closed' != this.readyState) {
+    // if we got data we're not polling
+    this.polling = false;
+    this.emit('pollComplete');
 
-  if ('open' == this.readyState) {
-    this.poll();
-  } else {
-    debug('ignoring poll - transport state "%s"', this.readyState);
+    if ('open' == this.readyState) {
+      this.poll();
+    } else {
+      debug('ignoring poll - transport state "%s"', this.readyState);
+    }
   }
 };
 
@@ -1936,7 +2175,7 @@ Polling.prototype.uri = function(){
 };
 
 });
-require.register("engine.io/lib/transports/polling-xhr.js", function(module, exports, require){
+require.register("engine.io/lib/transports/polling-xhr.js", function(exports, require, module){
 /**
  * Module requirements.
  */
@@ -1983,8 +2222,16 @@ function XHR(opts){
   Polling.call(this, opts);
 
   if (global.location) {
-    this.xd = opts.host != global.location.hostname ||
-      global.location.port != opts.port;
+    var isSSL = 'https:' == location.protocol;
+    var port = location.port;
+
+    // some user agents have empty `location.port`
+    if (Number(port) !== port) {
+      port = isSSL ? 443 : 80;
+    }
+
+    this.xd = opts.hostname != global.location.hostname ||
+      port != opts.port;
   }
 };
 
@@ -2047,6 +2294,7 @@ XHR.prototype.doWrite = function(data, fn){
 
 XHR.prototype.doPoll = function(){
   debug('xhr poll');
+  console.log('doing the poll');
   var req = this.request();
   var self = this;
   req.on('data', function(data){
@@ -2187,6 +2435,9 @@ Request.prototype.onError = function(err){
  */
 
 Request.prototype.cleanup = function(){
+  if ('undefined' == typeof this.xhr ) {
+    return;
+  }
   // xmlhttprequest
   this.xhr.onreadystatechange = empty;
 
@@ -2228,7 +2479,7 @@ if (xobject) {
 }
 
 });
-require.register("engine.io/lib/transports/polling-jsonp.js", function(module, exports, require){
+require.register("engine.io/lib/transports/polling-jsonp.js", function(exports, require, module){
 
 /**
  * Module requirements.
@@ -2350,6 +2601,7 @@ JSONPPolling.prototype.doClose = function () {
  */
 
 JSONPPolling.prototype.doPoll = function () {
+	var self = this;
   var script = document.createElement('script');
 
   if (this.script) {
@@ -2359,10 +2611,14 @@ JSONPPolling.prototype.doPoll = function () {
 
   script.async = true;
   script.src = this.uri();
+	script.onerror = function(e){
+		self.onError('jsonp poll error',e);
+	}
 
   var insertAt = document.getElementsByTagName('script')[0];
   insertAt.parentNode.insertBefore(script, insertAt);
   this.script = script;
+
 
   if (util.ua.gecko) {
     setTimeout(function () {
@@ -2458,8 +2714,7 @@ JSONPPolling.prototype.doWrite = function (data, fn) {
 };
 
 });
-require.register("engine.io/lib/transports/websocket.js", function(module, exports, require){
-
+require.register("engine.io/lib/transports/websocket.js", function(exports, require, module){
 /**
  * Module dependencies.
  */
@@ -2543,10 +2798,43 @@ WS.prototype.doOpen = function(){
  */
 
 WS.prototype.write = function(packets){
+  var self = this;
+  this.writable = false;
+  // encodePacket efficient as it uses WS framing
+  // no need for encodePayload
   for (var i = 0, l = packets.length; i < l; i++) {
     this.socket.send(parser.encodePacket(packets[i]));
   }
+  function ondrain() {
+    self.writable = true;
+    self.emit('drain');
+  }
+  // check periodically if we're done sending
+  if ('bufferedAmount' in this.socket) {
+    this.bufferedAmountId = setInterval(function() {
+      if (self.socket.bufferedAmount == 0) {
+        clearInterval(self.bufferedAmountId);
+        ondrain();
+      }
+    }, 50);
+  } else {
+    // fake drain
+    // defer to next tick to allow Socket to clear writeBuffer
+    setTimeout(ondrain, 0);
+  }
 };
+
+/**
+ * Called upon close
+ *
+ * @api private
+ */
+
+WS.prototype.onClose = function(){
+  // stop checking to see if websocket is done sending buffer
+  clearInterval(this.bufferedAmountId);
+  Transport.prototype.onClose.call(this);
+}
 
 /**
  * Closes socket.
@@ -2619,7 +2907,7 @@ function ws(){
 }
 
 });
-require.register("engine.io/lib/transports/flashsocket.js", function(module, exports, require){
+require.register("engine.io/lib/transports/flashsocket.js", function(exports, require, module){
 /**
  * Module dependencies.
  */
@@ -2886,14 +3174,17 @@ require.alias("component-emitter/index.js", "engine.io/deps/emitter/index.js");
 require.alias("LearnBoost-engine.io-protocol/lib/index.js", "engine.io/deps/engine.io-parser/lib/index.js");
 require.alias("LearnBoost-engine.io-protocol/lib/keys.js", "engine.io/deps/engine.io-parser/lib/keys.js");
 require.alias("LearnBoost-engine.io-protocol/lib/index.js", "engine.io/deps/engine.io-parser/index.js");
+require.alias("LearnBoost-engine.io-protocol/lib/index.js", "LearnBoost-engine.io-protocol/index.js");
 
 require.alias("visionmedia-debug/index.js", "engine.io/deps/debug/index.js");
 require.alias("visionmedia-debug/debug.js", "engine.io/deps/debug/debug.js");
 
 require.alias("engine.io/lib/index.js", "engine.io/index.js");
-  if ("undefined" == typeof module) {
-    window.eio = require("engine.io");
-  } else {
-    module.exports = require("engine.io");
-  }
-})();
+
+if (typeof exports == "object") {
+  module.exports = require("engine.io");
+} else if (typeof define == "function" && define.amd) {
+  define(function(){ return require("engine.io"); });
+} else {
+  window["eio"] = require("engine.io");
+}})();
